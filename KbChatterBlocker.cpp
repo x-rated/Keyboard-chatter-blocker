@@ -1,7 +1,7 @@
 #include <windows.h>
 #include <unordered_map>
 
-constexpr DWORD CHATTER_THRESHOLD_MS = 80;
+constexpr DWORD CHATTER_THRESHOLD_MS = 10;
 
 HHOOK g_hook = nullptr;
 std::unordered_map<DWORD, DWORD> lastPressTime;
