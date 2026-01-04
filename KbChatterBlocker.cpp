@@ -10,15 +10,16 @@
 const int INITIAL_CHATTER_THRESHOLD_MS = 100;
 const int REPEAT_CHATTER_THRESHOLD_MS = 30;
 const int REPEAT_TRANSITION_DELAY_MS = 150;
-const int MIN_RELEASE_DURATION_MS = 15;
-const int MIN_HELD_DURATION_MS = 40;
-const int ABSOLUTE_MINIMUM_MS = 85;          // Block everything faster than 85ms
+const int ABSOLUTE_MINIMUM_MS = 30;          // Only block the super obvious stuff
+const int CHATTER_WINDOW_MS = 300;           // Look back 300ms for chatter patterns
 
 struct KeyState {
     long long lastPressTime = 0;
     long long lastReleaseTime = 0;
     bool inRepeatMode = false;
     int blockedCount = 0;
+    int recentFastPresses = 0;      // Count of fast presses in recent window
+    long long lastFastPressTime = 0; // When we last saw a fast press
 };
 
 std::unordered_map<DWORD, KeyState> keyStates;
@@ -79,44 +80,50 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
         long long timeSinceRelease = currentTime - state.lastReleaseTime;
         long long keyHeldDuration = state.lastReleaseTime - state.lastPressTime;
 
-        // ABSOLUTE CHATTER BLOCK: anything faster than 85ms is definitely chatter
-        // Based on your typing, intentional double-taps are 95ms+ 
+        // ABSOLUTE CHATTER BLOCK: anything faster than 30ms is definitely chatter
         if (timeSincePress < ABSOLUTE_MINIMUM_MS) {
             state.blockedCount++;
             totalBlocked++;
             std::wstring status = L"✗ BLOCKED #" + std::to_wstring(totalBlocked) + 
                                  L" VK" + std::to_wstring(vkCode) + 
                                  L" | P→P:" + std::to_wstring(timeSincePress) + 
-                                 L"ms | ABSOLUTE-MINIMUM (chatter too fast)";
+                                 L"ms | ABSOLUTE-MINIMUM (too fast)";
             UpdateStatus(status);
             return true;
         }
 
-        // STRATEGY: Distinguish between chatter and intentional double-tap
-        // 
-        // For speeds 40-100ms, check if it looks intentional:
-        //   - MOST IMPORTANT: Key was held solidly (40ms+) - this is the key indicator!
-        //   - Key was properly released
-        //   - Has some gap after release (15ms+) - can be short for fast typing
-        //
-        // Chatter pattern: weak hold (20-35ms), longer gaps (30-50ms) from bouncing
-        // Intentional pattern: solid hold (40-60ms), shorter gaps (15-30ms) from deliberate typing
+        // Reset fast press counter if enough time has passed
+        if (currentTime - state.lastFastPressTime > CHATTER_WINDOW_MS) {
+            state.recentFastPresses = 0;
+        }
 
-        bool wasProperlyReleased = state.lastReleaseTime > state.lastPressTime;
-        bool wasHeldLongEnough = keyHeldDuration >= MIN_HELD_DURATION_MS;
-        bool hasProperGap = timeSinceRelease >= MIN_RELEASE_DURATION_MS;
+        // CHATTER PATTERN DETECTION
+        // If this is a fast press (30-100ms), check if it's part of a chatter pattern
+        bool isFastPress = timeSincePress < INITIAL_CHATTER_THRESHOLD_MS;
         
-        // If key was properly released with good hold and gap, it's intentional
-        bool looksIntentional = wasProperlyReleased && wasHeldLongEnough && hasProperGap;
-        
-        // If this looks like an intentional double-tap, allow it
-        if (looksIntentional) {
+        if (isFastPress) {
+            // Count this as a recent fast press
+            state.recentFastPresses++;
+            state.lastFastPressTime = currentTime;
+            
+            // If we've seen 2+ fast presses in a short window, it's likely chatter bouncing
+            // Intentional double-taps happen once, chatter keeps bouncing
+            if (state.recentFastPresses >= 2) {
+                state.blockedCount++;
+                totalBlocked++;
+                std::wstring status = L"✗ BLOCKED #" + std::to_wstring(totalBlocked) + 
+                                     L" VK" + std::to_wstring(vkCode) + 
+                                     L" | P→P:" + std::to_wstring(timeSincePress) + 
+                                     L"ms | CHATTER-PATTERN (bounce " + std::to_wstring(state.recentFastPresses) + L")";
+                UpdateStatus(status);
+                return true;
+            }
+            
+            // First fast press in the window - could be intentional double-tap, allow it
             state.lastPressTime = currentTime;
-            state.inRepeatMode = false;
-            std::wstring status = L"✓ Intentional double-tap VK" + std::to_wstring(vkCode) + 
+            std::wstring status = L"✓ Allowed fast press VK" + std::to_wstring(vkCode) + 
                                  L" | P→P:" + std::to_wstring(timeSincePress) + 
-                                 L"ms | Held:" + std::to_wstring(keyHeldDuration) + 
-                                 L"ms | Gap:" + std::to_wstring(timeSinceRelease) + L"ms";
+                                 L"ms (first in window)";
             UpdateStatus(status);
             return false;
         }
