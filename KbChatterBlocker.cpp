@@ -3,6 +3,9 @@
 
 constexpr DWORD CHATTER_THRESHOLD_MS = 100;
 
+// Hodnota flagu pro automatické opakování (repeat) v low‑level hooku
+constexpr DWORD REPEAT_FLAG = 0x4000;
+
 HHOOK g_hook = nullptr;
 std::unordered_map<DWORD, DWORD> lastPressTime;
 
@@ -12,8 +15,8 @@ LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
     {
         KBDLLHOOKSTRUCT* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
 
-        // ignoruj opakované stisky při držení klávesy
-        if (kb->flags & LLKHF_REPEAT)
+        // Pokud je to automatické opakování (hold down), nepouštět do threshold logiky
+        if (kb->flags & REPEAT_FLAG)
             return CallNextHookEx(g_hook, nCode, wParam, lParam);
 
         DWORD key = kb->vkCode;
