@@ -33,23 +33,21 @@ std::wstring logFilePath;
 
 void LogToFile(const std::wstring& message) {
     if (!logFile.is_open()) {
-        logFile.open("C:\\KbChatterBlocker_log.txt", std::ios::app);
+        return;
     }
     
-    if (logFile.is_open()) {
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-        
-        char timeStr[64];
-        sprintf_s(timeStr, "[%02d:%02d:%02d.%03d] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-        
-        logFile << timeStr;
-        
-        // Convert wstring to string for logging
-        std::string str(message.begin(), message.end());
-        logFile << str << std::endl;
-        logFile.flush();
-    }
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    
+    char timeStr[64];
+    sprintf_s(timeStr, "[%02d:%02d:%02d.%03d] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    
+    logFile << timeStr;
+    
+    // Convert wstring to string for logging
+    std::string str(message.begin(), message.end());
+    logFile << str << std::endl;
+    logFile.flush();
 }
 
 long long GetCurrentTimeMs() {
@@ -77,8 +75,6 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
         }
 
         long long timeSincePress = currentTime - state.lastPressTime;
-        long long timeSinceRelease = currentTime - state.lastReleaseTime;
-        long long keyHeldDuration = state.lastReleaseTime - state.lastPressTime;
 
         // ABSOLUTE CHATTER BLOCK: anything faster than 30ms is definitely chatter
         if (timeSincePress < ABSOLUTE_MINIMUM_MS) {
@@ -139,26 +135,13 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
             }
         }
 
-        // Block if within threshold and doesn't look like intentional input
+        // Block if within threshold
         if (timeSincePress < threshold) {
             state.blockedCount++;
             totalBlocked++;
-            
-            std::wstring reason;
-            if (!wasProperlyReleased) {
-                reason = L"no-release";
-            } else if (!wasHeldLongEnough) {
-                reason = L"held:" + std::to_wstring(keyHeldDuration) + L"ms<" + std::to_wstring(MIN_HELD_DURATION_MS);
-            } else if (!hasProperGap) {
-                reason = L"gap:" + std::to_wstring(timeSinceRelease) + L"ms<" + std::to_wstring(MIN_RELEASE_DURATION_MS);
-            } else {
-                reason = L"under-threshold";
-            }
-            
             std::wstring status = L"✗ BLOCKED #" + std::to_wstring(totalBlocked) + 
                                  L" VK" + std::to_wstring(vkCode) + 
-                                 L" | P→P:" + std::to_wstring(timeSincePress) + 
-                                 L"ms | " + reason;
+                                 L" | P→P:" + std::to_wstring(timeSincePress) + L"ms";
             UpdateStatus(status);
             return true;
         }
@@ -245,7 +228,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     hStatusWindow = CreateWindowEx(
         0,
         L"KbChatterBlockerClass",
-        L"Keyboard Chatter Blocker - Diagnostic Mode",
+        L"Keyboard Chatter Blocker - Pattern Detection Mode",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, 500, 280,
         NULL, NULL, hInstance, NULL
@@ -262,9 +245,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         10, 10, 470, 20,
         hStatusWindow, NULL, hInstance, NULL);
 
-    std::wstring config = L"Initial Threshold: " + std::to_wstring(INITIAL_CHATTER_THRESHOLD_MS) + 
-                         L"ms | Repeat: " + std::to_wstring(REPEAT_CHATTER_THRESHOLD_MS) + 
-                         L"ms | Min Release: " + std::to_wstring(MIN_RELEASE_DURATION_MS) + L"ms";
+    std::wstring config = L"Pattern Detection: First fast press allowed, 2nd+ blocked | Window: " + 
+                         std::to_wstring(CHATTER_WINDOW_MS) + L"ms";
     CreateWindow(L"STATIC", config.c_str(),
         WS_VISIBLE | WS_CHILD | SS_LEFT,
         10, 35, 470, 20,
@@ -280,7 +262,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         10, 80, 470, 40,
         hStatusWindow, NULL, hInstance, NULL);
 
-    CreateWindow(L"STATIC", L"The app is running and monitoring your keyboard.\nBlocked chatter events will be shown above.",
+    CreateWindow(L"STATIC", L"Pattern detection: allows first fast double-tap,\nblocks repeated bouncing.",
         WS_VISIBLE | WS_CHILD | SS_LEFT,
         10, 130, 470, 40,
         hStatusWindow, NULL, hInstance, NULL);
@@ -315,12 +297,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // Initialize log file
     logFile.open(logFilePathNarrow, std::ios::trunc);
     if (logFile.is_open()) {
-        logFile << "=== Keyboard Chatter Blocker Log ===" << std::endl;
-        logFile << "Initial Threshold: " << INITIAL_CHATTER_THRESHOLD_MS << "ms" << std::endl;
+        logFile << "=== Keyboard Chatter Blocker Log (Pattern Detection) ===" << std::endl;
+        logFile << "Absolute Minimum: " << ABSOLUTE_MINIMUM_MS << "ms" << std::endl;
+        logFile << "Fast Press Threshold: " << INITIAL_CHATTER_THRESHOLD_MS << "ms" << std::endl;
+        logFile << "Chatter Window: " << CHATTER_WINDOW_MS << "ms" << std::endl;
         logFile << "Repeat Threshold: " << REPEAT_CHATTER_THRESHOLD_MS << "ms" << std::endl;
-        logFile << "Min Held Duration: " << MIN_HELD_DURATION_MS << "ms" << std::endl;
-        logFile << "Min Release Duration: " << MIN_RELEASE_DURATION_MS << "ms" << std::endl;
-        logFile << "=====================================" << std::endl << std::endl;
+        logFile << "=========================================================" << std::endl << std::endl;
         logFile.flush();
         
         // Show log file path in window
@@ -339,7 +321,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         MessageBox(hStatusWindow, errorMsg.c_str(), L"Error", MB_OK | MB_ICONERROR);
         UpdateStatus(L"Status: FAILED - Hook not installed!");
     } else {
-        UpdateStatus(L"Status: Running | Blocked: 0 | Waiting for chatter...");
+        UpdateStatus(L"Status: Running | Pattern detection active");
     }
 
     // Message loop
