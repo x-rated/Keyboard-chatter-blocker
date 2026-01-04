@@ -1,0 +1,27 @@
+name: Build Chat‑Blocker
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Visual Studio
+        uses: ilammy/msvcsetup@v1
+        with:
+          arch: x64
+
+      - name: Compile Win64 EXE
+        run: |
+          cl /EHsc /Fe:KbChatterBlocker.exe KbChatterBlocker.cpp
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v3
+        with:
+          name: chatter-blocker-exe
+          path: KbChatterBlocker.exe
