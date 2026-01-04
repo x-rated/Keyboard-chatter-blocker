@@ -17,10 +17,10 @@ jobs:
           vs-version: latest
 
       - name: Build EXE
-        run: msbuild KbChatterBlocker.vcxproj /p:Configuration=Release /p:Platform=x64
+        run: msbuild KbChatterBlocker.sln /p:Configuration=Release /p:Platform=x64
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
           name: chatter-blocker-exe
-          path: Release\KbChatterBlocker.exe
+          path: Release\x64\KbChatterBlocker.exe
