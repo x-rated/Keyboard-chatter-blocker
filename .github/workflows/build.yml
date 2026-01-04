@@ -23,4 +23,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: chatter-blocker-exe
-          path: Release\x64\KbChatterBlocker.exe
+          path: Release\KbChatterBlocker.exe
