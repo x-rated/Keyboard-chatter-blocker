@@ -4,7 +4,7 @@
 #include <string>
 
 // Configuration
-const int INITIAL_CHATTER_THRESHOLD_MS = 100;
+const int INITIAL_CHATTER_THRESHOLD_MS = 81;
 const int REPEAT_CHATTER_THRESHOLD_MS = 15;
 const int REPEAT_TRANSITION_DELAY_MS = 200;
 const int MIN_RELEASE_DURATION_MS = 20;
@@ -46,9 +46,14 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
 
         long long timeSincePress = currentTime - state.lastPressTime;
         long long timeSinceRelease = currentTime - state.lastReleaseTime;
+        long long releasePressDuration = state.lastReleaseTime - state.lastPressTime;
 
-        // Check for intentional double-tap
+        // Check for intentional double-tap:
+        // 1. Key must have been released (lastRelease > lastPress)
+        // 2. Key was held down for reasonable duration (not instant tap)
+        // 3. Time since release meets minimum threshold
         if (state.lastReleaseTime > state.lastPressTime && 
+            releasePressDuration >= MIN_RELEASE_DURATION_MS &&
             timeSinceRelease >= MIN_RELEASE_DURATION_MS) {
             state.lastPressTime = currentTime;
             state.inRepeatMode = false;
@@ -69,9 +74,11 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
             state.blockedCount++;
             totalBlocked++;
             
-            std::wstring status = L"Status: Running | Blocked: " + std::to_wstring(totalBlocked) + 
-                                 L" | Last: VK" + std::to_wstring(vkCode) + 
-                                 L" (" + std::to_wstring(timeSincePress) + L"ms)";
+            std::wstring status = L"BLOCKED: " + std::to_wstring(totalBlocked) + 
+                                 L" | VK" + std::to_wstring(vkCode) + 
+                                 L" | Press-to-Press: " + std::to_wstring(timeSincePress) + L"ms" +
+                                 L" | Release-to-Press: " + std::to_wstring(timeSinceRelease) + L"ms" +
+                                 L" | Key-held: " + std::to_wstring(releasePressDuration) + L"ms";
             UpdateStatus(status);
             return true;
         }
