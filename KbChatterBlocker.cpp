@@ -1,10 +1,9 @@
 #include <windows.h>
-#include <iostream>
 #include <unordered_map>
 #include <chrono>
 
 // Configuration
-const int INITIAL_CHATTER_THRESHOLD_MS = 100;  // Strict threshold for first repeat
+const int INITIAL_CHATTER_THRESHOLD_MS = 81;  // Strict threshold for first repeat
 const int REPEAT_CHATTER_THRESHOLD_MS = 15;   // Lenient threshold for subsequent repeats
 const int REPEAT_TRANSITION_DELAY_MS = 200;   // Time to switch to repeat mode
 
@@ -54,10 +53,6 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
         // Block if within threshold
         if (timeSincePress < threshold) {
             state.blockedCount++;
-            std::cout << "[BLOCKED] VK:" << vkCode 
-                      << " - " << timeSincePress << "ms since last press"
-                      << " (threshold: " << threshold << "ms)"
-                      << " - Total blocked: " << state.blockedCount << std::endl;
             return true;
         }
 
@@ -79,7 +74,6 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 
         // Allow ESC to exit
         if (vkCode == VK_ESCAPE && wParam == WM_KEYDOWN) {
-            std::cout << "\n[INFO] ESC pressed - Exiting..." << std::endl;
             PostQuitMessage(0);
             return CallNextHookEx(hHook, nCode, wParam, lParam);
         }
@@ -94,25 +88,13 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     return CallNextHookEx(hHook, nCode, wParam, lParam);
 }
 
-int main() {
-    std::cout << "============================================================" << std::endl;
-    std::cout << "Adaptive Keyboard Chatter Blocker" << std::endl;
-    std::cout << "============================================================" << std::endl;
-    std::cout << "Initial chatter threshold: " << INITIAL_CHATTER_THRESHOLD_MS << "ms" << std::endl;
-    std::cout << "Repeat chatter threshold: " << REPEAT_CHATTER_THRESHOLD_MS << "ms" << std::endl;
-    std::cout << "Repeat mode delay: " << REPEAT_TRANSITION_DELAY_MS << "ms" << std::endl;
-    std::cout << "\nPress ESC to exit" << std::endl;
-    std::cout << "============================================================\n" << std::endl;
-
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     // Install keyboard hook
     hHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
     
     if (hHook == NULL) {
-        std::cerr << "Failed to install hook! Error: " << GetLastError() << std::endl;
         return 1;
     }
-
-    std::cout << "[INFO] Hook installed successfully. Monitoring keyboard..." << std::endl;
 
     // Message loop
     MSG msg;
