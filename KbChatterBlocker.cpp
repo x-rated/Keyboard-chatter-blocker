@@ -2,39 +2,65 @@
 #include <unordered_map>
 
 constexpr DWORD CHATTER_THRESHOLD_MS = 100;
-HHOOK g_hook = nullptr;
 
-// poslední stisky jen pro skutečné key down
-std::unordered_map<DWORD, DWORD> lastPressTime;
+std::unordered_map<USHORT, DWORD> lastPressTime;
 
-LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
+LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-    if (nCode != HC_ACTION || wParam != WM_KEYDOWN)
-        return CallNextHookEx(g_hook, nCode, wParam, lParam);
+    if (uMsg == WM_INPUT)
+    {
+        UINT dwSize = 0;
+        GetRawInputData((HRAWINPUT)lParam, RID_INPUT, nullptr, &dwSize, sizeof(RAWINPUTHEADER));
+        if (dwSize == 0) return 0;
 
-    KBDLLHOOKSTRUCT* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
+        RAWINPUT* raw = (RAWINPUT*)malloc(dwSize);
+        if (!raw) return 0;
 
-    // ignoruj všechny opakované stisky při držení
-    if (kb->flags & 0x4000)
-        return CallNextHookEx(g_hook, nCode, wParam, lParam);
+        if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, raw, &dwSize, sizeof(RAWINPUTHEADER)) == dwSize)
+        {
+            if (raw->header.dwType == RIM_TYPEKEYBOARD)
+            {
+                USHORT key = raw->data.keyboard.VKey;
+                USHORT flags = raw->data.keyboard.Flags;
 
-    DWORD key = kb->vkCode;
-    DWORD now = GetTickCount();
+                // ignoruj uvolnění klávesy
+                if (!(flags & RI_KEY_BREAK))
+                {
+                    DWORD now = GetTickCount();
+                    auto it = lastPressTime.find(key);
+                    if (it != lastPressTime.end() && now - it->second < CHATTER_THRESHOLD_MS)
+                    {
+                        free(raw);
+                        return 0; // blokuj chatter
+                    }
+                    lastPressTime[key] = now;
+                }
+            }
+        }
 
-    auto it = lastPressTime.find(key);
-    if (it != lastPressTime.end() && now - it->second < CHATTER_THRESHOLD_MS)
-        return 1; // blokuj chatter
+        free(raw);
+    }
 
-    // update timestamp jen pro první stisk
-    lastPressTime[key] = now;
-
-    return CallNextHookEx(g_hook, nCode, wParam, lParam);
+    return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
-    g_hook = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardProc, hInst, 0);
-    if (!g_hook) return 1;
+    WNDCLASS wc = {};
+    wc.lpfnWndProc = WindowProc;
+    wc.hInstance = hInst;
+    wc.lpszClassName = L"ChatterBlockerWindow";
+    RegisterClass(&wc);
+
+    HWND hwnd = CreateWindowEx(0, wc.lpszClassName, L"ChatterBlocker", 0,
+                               0, 0, 0, 0, HWND_MESSAGE, nullptr, hInst, nullptr);
+
+    RAWINPUTDEVICE rid;
+    rid.usUsagePage = 0x01; // Generic desktop controls
+    rid.usUsage = 0x06;     // Keyboard
+    rid.dwFlags = RIDEV_NOLEGACY; // ignoruj WM_KEYDOWN
+    rid.hwndTarget = hwnd;
+    RegisterRawInputDevices(&rid, 1, sizeof(rid));
 
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0))
@@ -43,6 +69,5 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         DispatchMessage(&msg);
     }
 
-    UnhookWindowsHookEx(g_hook);
     return 0;
 }
