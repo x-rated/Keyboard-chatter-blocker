@@ -7,7 +7,8 @@
 const int INITIAL_CHATTER_THRESHOLD_MS = 100;
 const int REPEAT_CHATTER_THRESHOLD_MS = 15;
 const int REPEAT_TRANSITION_DELAY_MS = 200;
-const int MIN_RELEASE_DURATION_MS = 20;
+const int MIN_RELEASE_DURATION_MS = 25;       // Minimum time key must be released for intentional tap
+const int MIN_HELD_DURATION_MS = 30;          // Minimum time key must be held for intentional tap
 
 struct KeyState {
     long long lastPressTime = 0;
@@ -41,25 +42,43 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
     if (isKeyDown) {
         if (state.lastPressTime == 0) {
             state.lastPressTime = currentTime;
+            UpdateStatus(L"First press of VK" + std::to_wstring(vkCode));
             return false;
         }
 
         long long timeSincePress = currentTime - state.lastPressTime;
         long long timeSinceRelease = currentTime - state.lastReleaseTime;
-        long long releasePressDuration = state.lastReleaseTime - state.lastPressTime;
+        long long keyHeldDuration = state.lastReleaseTime - state.lastPressTime;
 
-        // Check for intentional double-tap:
-        // 1. Key must have been released (lastRelease > lastPress)
-        // 2. Key was held down for reasonable duration (not instant tap)
-        // 3. Time since release meets minimum threshold
-        if (state.lastReleaseTime > state.lastPressTime && 
-            releasePressDuration >= MIN_RELEASE_DURATION_MS &&
-            timeSinceRelease >= MIN_RELEASE_DURATION_MS) {
+        // STRATEGY: Distinguish between chatter and intentional double-tap
+        // 
+        // Chatter characteristics:
+        //   - Very short hold duration (key barely pressed, like 5-15ms)
+        //   - Very short or no gap between release and next press
+        //   - Erratic, unintentional bouncing
+        //
+        // Intentional double-tap characteristics:
+        //   - Reasonable hold duration (finger actually pressed, 30-80ms)
+        //   - Clear gap after release (finger lifted and pressed again, 25-50ms)
+        //   - Deliberate rhythm
+
+        bool wasProperlyReleased = state.lastReleaseTime > state.lastPressTime;
+        bool wasHeldLongEnough = keyHeldDuration >= MIN_HELD_DURATION_MS;
+        bool hasProperGap = timeSinceRelease >= MIN_RELEASE_DURATION_MS;
+        
+        // If this looks like an intentional double-tap, allow it regardless of timing
+        if (wasProperlyReleased && wasHeldLongEnough && hasProperGap) {
             state.lastPressTime = currentTime;
             state.inRepeatMode = false;
+            std::wstring status = L"✓ Intentional double-tap VK" + std::to_wstring(vkCode) + 
+                                 L" | P→P:" + std::to_wstring(timeSincePress) + 
+                                 L"ms | Held:" + std::to_wstring(keyHeldDuration) + 
+                                 L"ms | Gap:" + std::to_wstring(timeSinceRelease) + L"ms";
+            UpdateStatus(status);
             return false;
         }
 
+        // Check if we're in repeat/hold mode (holding a key down)
         int threshold;
         if (state.inRepeatMode) {
             threshold = REPEAT_CHATTER_THRESHOLD_MS;
@@ -70,20 +89,34 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
             }
         }
 
+        // Block if within threshold and doesn't look like intentional input
         if (timeSincePress < threshold) {
             state.blockedCount++;
             totalBlocked++;
             
-            std::wstring status = L"BLOCKED: " + std::to_wstring(totalBlocked) + 
-                                 L" | VK" + std::to_wstring(vkCode) + 
-                                 L" | Press-to-Press: " + std::to_wstring(timeSincePress) + L"ms" +
-                                 L" | Release-to-Press: " + std::to_wstring(timeSinceRelease) + L"ms" +
-                                 L" | Key-held: " + std::to_wstring(releasePressDuration) + L"ms";
+            std::wstring reason;
+            if (!wasProperlyReleased) {
+                reason = L"no-release";
+            } else if (!wasHeldLongEnough) {
+                reason = L"held:" + std::to_wstring(keyHeldDuration) + L"ms<" + std::to_wstring(MIN_HELD_DURATION_MS);
+            } else if (!hasProperGap) {
+                reason = L"gap:" + std::to_wstring(timeSinceRelease) + L"ms<" + std::to_wstring(MIN_RELEASE_DURATION_MS);
+            } else {
+                reason = L"under-threshold";
+            }
+            
+            std::wstring status = L"✗ BLOCKED #" + std::to_wstring(totalBlocked) + 
+                                 L" VK" + std::to_wstring(vkCode) + 
+                                 L" | P→P:" + std::to_wstring(timeSincePress) + 
+                                 L"ms | " + reason;
             UpdateStatus(status);
             return true;
         }
 
         state.lastPressTime = currentTime;
+        std::wstring status = L"Normal press VK" + std::to_wstring(vkCode) + 
+                             L" (" + std::to_wstring(timeSincePress) + L"ms)";
+        UpdateStatus(status);
         return false;
     } else {
         state.lastReleaseTime = currentTime;
