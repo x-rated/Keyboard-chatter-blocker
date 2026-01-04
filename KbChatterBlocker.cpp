@@ -84,18 +84,38 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
         //   - Very short hold duration (key barely pressed, like 5-15ms)
         //   - Very short or no gap between release and next press
         //   - Erratic, unintentional bouncing
+        //   - Even with "reasonable" timings, total time is suspiciously fast (50-90ms)
         //
         // Intentional double-tap characteristics:
         //   - Reasonable hold duration (finger actually pressed, 30-80ms)
         //   - Clear gap after release (finger lifted and pressed again, 25-50ms)
         //   - Deliberate rhythm
+        //   - Total time usually 100ms+ OR very deliberate with good hold+gap
 
         bool wasProperlyReleased = state.lastReleaseTime > state.lastPressTime;
         bool wasHeldLongEnough = keyHeldDuration >= MIN_HELD_DURATION_MS;
         bool hasProperGap = timeSinceRelease >= MIN_RELEASE_DURATION_MS;
         
-        // If this looks like an intentional double-tap, allow it regardless of timing
-        if (wasProperlyReleased && wasHeldLongEnough && hasProperGap) {
+        // For fast double-taps (under 100ms), require BOTH excellent hold AND excellent gap
+        // to avoid mistaking chatter for intentional input
+        bool looksIntentional = false;
+        
+        if (timeSincePress >= INITIAL_CHATTER_THRESHOLD_MS) {
+            // Over 100ms - definitely not chatter, allow it
+            looksIntentional = true;
+        } else if (wasProperlyReleased && wasHeldLongEnough && hasProperGap) {
+            // Under 100ms but has good characteristics
+            // Require STRONG signals for both hold and gap
+            bool strongHold = keyHeldDuration >= 40;  // Must be held solidly
+            bool strongGap = timeSinceRelease >= 35;   // Must have clear gap
+            
+            if (strongHold && strongGap) {
+                looksIntentional = true;
+            }
+        }
+        
+        // If this looks like an intentional double-tap, allow it
+        if (looksIntentional) {
             state.lastPressTime = currentTime;
             state.inRepeatMode = false;
             std::wstring status = L"✓ Intentional double-tap VK" + std::to_wstring(vkCode) + 
