@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <unordered_map>
 #include <chrono>
+#include <fstream>
 
 // Configuration
 const int INITIAL_CHATTER_THRESHOLD_MS = 81;  // Strict threshold for first repeat
@@ -17,6 +18,21 @@ struct KeyState {
 
 std::unordered_map<DWORD, KeyState> keyStates;
 HHOOK hHook = NULL;
+
+void LogError(const char* message, DWORD errorCode = 0) {
+    std::ofstream log("C:\\KbChatterBlocker_log.txt", std::ios::app);
+    if (log.is_open()) {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        log << "[" << st.wHour << ":" << st.wMinute << ":" << st.wSecond << "] ";
+        log << message;
+        if (errorCode != 0) {
+            log << " (Error: " << errorCode << ")";
+        }
+        log << "\n";
+        log.close();
+    }
+}
 
 long long GetCurrentTimeMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -101,23 +117,30 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    LogError("Starting KbChatterBlocker...");
+
     // Create a named mutex so we can verify the app is running
     // Also prevents multiple instances
     HANDLE hMutex = CreateMutex(NULL, TRUE, L"KbChatterBlockerMutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         // Another instance is already running
+        LogError("Another instance already running");
         CloseHandle(hMutex);
         return 0;
     }
+    LogError("Mutex created successfully");
 
     // Install keyboard hook
     hHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
     
     if (hHook == NULL) {
+        DWORD error = GetLastError();
+        LogError("Failed to install hook", error);
         ReleaseMutex(hMutex);
         CloseHandle(hMutex);
         return 1;
     }
+    LogError("Hook installed successfully");
 
     // Message loop
     MSG msg;
@@ -127,6 +150,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     // Cleanup
+    LogError("Shutting down...");
     UnhookWindowsHookEx(hHook);
     ReleaseMutex(hMutex);
     CloseHandle(hMutex);
