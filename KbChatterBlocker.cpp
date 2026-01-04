@@ -18,9 +18,7 @@ LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
         if (it != lastPressTime.end())
         {
             if (now - it->second < CHATTER_THRESHOLD_MS)
-            {
                 return 1; // blokuj chatter
-            }
         }
 
         lastPressTime[key] = now;
