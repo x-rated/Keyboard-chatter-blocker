@@ -7,7 +7,7 @@
 const int CHATTER_THRESHOLD_MS = 85;         // Block presses in 60-85ms range
 const int MACRO_SPEED_THRESHOLD_MS = 60;     // Anything faster than this = macro, allow through
 const int REPEAT_CHATTER_THRESHOLD_MS = 30;  // Threshold when holding key
-const int REPEAT_TRANSITION_DELAY_MS = 90;   // Time to enter repeat mode
+const int REPEAT_TRANSITION_DELAY_MS = 150;  // Time to enter repeat mode
 
 struct KeyState {
     long long lastPressTime = 0;
