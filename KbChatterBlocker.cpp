@@ -4,7 +4,7 @@
 #include <string>
 
 // Configuration
-const int CHATTER_THRESHOLD_MS = 85;         // Block presses in 60-85ms range
+const int CHATTER_THRESHOLD_MS = 80;         // Block presses in 60-80ms range
 const int MACRO_SPEED_THRESHOLD_MS = 60;     // Anything faster than this = macro, allow through
 const int REPEAT_CHATTER_THRESHOLD_MS = 30;  // Threshold when holding key
 const int REPEAT_TRANSITION_DELAY_MS = 150;  // Time to enter repeat mode
