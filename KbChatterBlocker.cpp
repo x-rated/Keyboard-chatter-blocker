@@ -2,24 +2,25 @@
 #include <unordered_map>
 #include <chrono>
 
-// Configuration
-const int CHATTER_THRESHOLD_MS = 85;         // Block everything faster than this
-const int REPEAT_CHATTER_THRESHOLD_MS = 30;  // Threshold when holding key
+// ================= CONFIG =================
+
+const int CHATTER_THRESHOLD_MS = 85;         // Block very fast double presses
+const int REPEAT_CHATTER_THRESHOLD_MS = 30;  // Threshold while holding key
 const int REPEAT_TRANSITION_DELAY_MS = 150;  // Time to enter repeat mode
-const int RAPID_SEQUENCE_THRESHOLD = 3;      // Number of fast presses to consider it a macro
-const int RAPID_SEQUENCE_WINDOW_MS = 500;    // Time window to detect rapid sequences
+
+// ================= DATA ===================
 
 struct KeyState {
     long long lastPressTime = 0;
     long long lastReleaseTime = 0;
     bool inRepeatMode = false;
     int blockedCount = 0;
-    int rapidPressCount = 0;            // Count of rapid presses in current sequence
-    long long rapidSequenceStartTime = 0; // When rapid sequence started
 };
 
 std::unordered_map<DWORD, KeyState> keyStates;
 HHOOK hHook = NULL;
+
+// ================= TIME ===================
 
 long long GetCurrentTimeMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -27,117 +28,99 @@ long long GetCurrentTimeMs() {
     ).count();
 }
 
+// ================= LOGIC ==================
+
 bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
     KeyState& state = keyStates[vkCode];
-    long long currentTime = GetCurrentTimeMs();
+    long long now = GetCurrentTimeMs();
 
     if (isKeyDown) {
         if (state.lastPressTime == 0) {
-            state.lastPressTime = currentTime;
-            state.rapidSequenceStartTime = currentTime;
-            state.rapidPressCount = 1;
+            state.lastPressTime = now;
             return false;
         }
 
-        long long timeSincePress = currentTime - state.lastPressTime;
-        long long timeSinceSequenceStart = currentTime - state.rapidSequenceStartTime;
+        long long delta = now - state.lastPressTime;
 
-        // Reset rapid press counter if too much time has passed
-        if (timeSinceSequenceStart > RAPID_SEQUENCE_WINDOW_MS) {
-            state.rapidPressCount = 0;
-            state.rapidSequenceStartTime = currentTime;
-        }
+        int threshold = CHATTER_THRESHOLD_MS;
 
-        // If this is a fast press, increment rapid press counter
-        if (timeSincePress < CHATTER_THRESHOLD_MS) {
-            state.rapidPressCount++;
-            
-            // If we've seen multiple rapid presses in sequence, it's likely a macro
-            // Chatter typically produces 1-2 bounces, macros produce longer sequences
-            if (state.rapidPressCount >= RAPID_SEQUENCE_THRESHOLD) {
-                // This is a rapid sequence (macro) - allow it
-                state.lastPressTime = currentTime;
-                return false;
-            }
-            
-            // Not enough rapid presses yet - block as potential chatter
-            state.blockedCount++;
-            return true;
-        }
-
-        // Reset rapid press counter for slower presses
-        state.rapidPressCount = 0;
-        state.rapidSequenceStartTime = currentTime;
-
-        // Check if we're in repeat/hold mode
-        int threshold;
         if (state.inRepeatMode) {
             threshold = REPEAT_CHATTER_THRESHOLD_MS;
-        } else {
-            threshold = CHATTER_THRESHOLD_MS;
-            if (timeSincePress > REPEAT_TRANSITION_DELAY_MS) {
-                state.inRepeatMode = true;
-            }
+        } else if (delta > REPEAT_TRANSITION_DELAY_MS) {
+            state.inRepeatMode = true;
+            threshold = REPEAT_CHATTER_THRESHOLD_MS;
         }
 
-        // Block if within threshold
-        if (timeSincePress < threshold) {
+        if (delta < threshold) {
             state.blockedCount++;
-            return true;
+            return true; // chatter detected
         }
 
-        state.lastPressTime = currentTime;
+        state.lastPressTime = now;
         return false;
     } else {
-        state.lastReleaseTime = currentTime;
+        // key up
+        state.lastReleaseTime = now;
         state.inRepeatMode = false;
         return false;
     }
 }
 
+// ================= HOOK ===================
+
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
-        KBDLLHOOKSTRUCT* pKbdStruct = (KBDLLHOOKSTRUCT*)lParam;
-        DWORD vkCode = pKbdStruct->vkCode;
+        KBDLLHOOKSTRUCT* kb = (KBDLLHOOKSTRUCT*)lParam;
+
+        // 👉 IGNORE INJECTED INPUT (macros, AHK, G Hub, etc.)
+        if (kb->flags & LLKHF_INJECTED) {
+            return CallNextHookEx(hHook, nCode, wParam, lParam);
+        }
 
         bool isKeyDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
-        
-        if (ShouldBlockKey(vkCode, isKeyDown)) {
-            return 1; // Block the key
+        bool isKeyUp   = (wParam == WM_KEYUP   || wParam == WM_SYSKEYUP);
+
+        if (isKeyDown || isKeyUp) {
+            if (ShouldBlockKey(kb->vkCode, isKeyDown)) {
+                return 1; // block physical chatter
+            }
         }
     }
 
     return CallNextHookEx(hHook, nCode, wParam, lParam);
 }
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-    // Create mutex to prevent multiple instances
+// ================= ENTRY ==================
+
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+    // Prevent multiple instances
     HANDLE hMutex = CreateMutex(NULL, TRUE, L"KbChatterBlockerMutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         CloseHandle(hMutex);
         return 0;
     }
 
-    // Install keyboard hook
-    hHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
-    
-    if (hHook == NULL) {
+    hHook = SetWindowsHookEx(
+        WH_KEYBOARD_LL,
+        LowLevelKeyboardProc,
+        NULL,
+        0
+    );
+
+    if (!hHook) {
         ReleaseMutex(hMutex);
         CloseHandle(hMutex);
         return 1;
     }
 
-    // Message loop
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
 
-    // Cleanup
     UnhookWindowsHookEx(hHook);
     ReleaseMutex(hMutex);
     CloseHandle(hMutex);
-
     return 0;
 }
