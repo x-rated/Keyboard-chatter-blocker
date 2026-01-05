@@ -1,19 +1,21 @@
 #include <windows.h>
 #include <unordered_map>
 #include <chrono>
-#include <string>
 
 // Configuration
-const int CHATTER_THRESHOLD_MS = 80;         // Block presses in 60-80ms range
-const int MACRO_SPEED_THRESHOLD_MS = 60;     // Anything faster than this = macro, allow through
+const int CHATTER_THRESHOLD_MS = 85;         // Threshold for suspected chatter
 const int REPEAT_CHATTER_THRESHOLD_MS = 30;  // Threshold when holding key
 const int REPEAT_TRANSITION_DELAY_MS = 150;  // Time to enter repeat mode
+const int CHATTER_SUSPICION_COUNT = 2;       // How many fast presses before we start blocking
+const int CHATTER_HISTORY_WINDOW_MS = 2000;  // Time window to track chatter history (2 seconds)
 
 struct KeyState {
     long long lastPressTime = 0;
     long long lastReleaseTime = 0;
     bool inRepeatMode = false;
     int blockedCount = 0;
+    int suspectedChatterCount = 0;      // How many times we've seen fast presses in the window
+    long long chatterHistoryStartTime = 0; // When we started tracking this key's chatter
 };
 
 std::unordered_map<DWORD, KeyState> keyStates;
@@ -25,77 +27,49 @@ long long GetCurrentTimeMs() {
     ).count();
 }
 
-bool IsGameWindow() {
-    // Get the foreground window
-    HWND hwnd = GetForegroundWindow();
-    if (!hwnd) return false;
-
-    // Get window class name
-    wchar_t className[256];
-    GetClassName(hwnd, className, 256);
-    
-    // Get window title
-    wchar_t windowTitle[256];
-    GetWindowText(hwnd, windowTitle, 256);
-    
-    std::wstring classStr(className);
-    std::wstring titleStr(windowTitle);
-    
-    // Check for common game engine window classes
-    if (classStr.find(L"UnrealWindow") != std::wstring::npos ||
-        classStr.find(L"SDL_app") != std::wstring::npos ||
-        classStr.find(L"GLFW") != std::wstring::npos ||
-        classStr.find(L"UnityWndClass") != std::wstring::npos) {
-        return true;
-    }
-    
-    // Check if window is fullscreen (common for games)
-    RECT windowRect;
-    GetWindowRect(hwnd, &windowRect);
-    
-    int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-    
-    bool isFullscreen = (windowRect.left == 0 && 
-                        windowRect.top == 0 && 
-                        (windowRect.right - windowRect.left) == screenWidth && 
-                        (windowRect.bottom - windowRect.top) == screenHeight);
-    
-    // Check window style for borderless fullscreen
-    LONG style = GetWindowLong(hwnd, GWL_STYLE);
-    bool isBorderless = !(style & WS_CAPTION) && !(style & WS_THICKFRAME);
-    
-    // If window is fullscreen or borderless fullscreen, likely a game
-    if ((isFullscreen || isBorderless) && 
-        (windowRect.right - windowRect.left) >= 800 && 
-        (windowRect.bottom - windowRect.top) >= 600) {
-        return true;
-    }
-    
-    return false;
-}
-
 bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
-    // If we're in a game, disable all filtering
-    if (IsGameWindow()) {
-        return false;
-    }
-    
     KeyState& state = keyStates[vkCode];
     long long currentTime = GetCurrentTimeMs();
 
     if (isKeyDown) {
         if (state.lastPressTime == 0) {
             state.lastPressTime = currentTime;
+            state.chatterHistoryStartTime = currentTime;
             return false;
         }
 
         long long timeSincePress = currentTime - state.lastPressTime;
+        long long timeSinceHistoryStart = currentTime - state.chatterHistoryStartTime;
 
-        // MACRO DETECTION: If faster than 60ms, it's likely a macro - allow through
-        if (timeSincePress < MACRO_SPEED_THRESHOLD_MS) {
-            state.lastPressTime = currentTime;
-            return false;
+        // Reset chatter history if enough time has passed
+        if (timeSinceHistoryStart > CHATTER_HISTORY_WINDOW_MS) {
+            state.suspectedChatterCount = 0;
+            state.chatterHistoryStartTime = currentTime;
+        }
+
+        // Check if this press is in the suspected chatter range (0-85ms)
+        if (timeSincePress < CHATTER_THRESHOLD_MS) {
+            // Increment suspected chatter count
+            state.suspectedChatterCount++;
+            
+            // SMART DETECTION:
+            // One-off fast press is fine (could be intentional double-tap or macro)
+            // But if we've seen this key repeatedly show fast presses, start blocking
+            if (state.suspectedChatterCount < CHATTER_SUSPICION_COUNT) {
+                // First fast press in the window - allow it (benefit of the doubt)
+                state.lastPressTime = currentTime;
+                return false;
+            }
+            
+            // This key has repeatedly shown fast presses - likely chatter, block it
+            state.blockedCount++;
+            return true;
+        }
+
+        // Reset suspicion count for normal-speed presses
+        if (timeSincePress >= CHATTER_THRESHOLD_MS) {
+            state.suspectedChatterCount = 0;
+            state.chatterHistoryStartTime = currentTime;
         }
 
         // Check if we're in repeat/hold mode
@@ -109,7 +83,7 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
             }
         }
 
-        // Block if within chatter range (60-85ms)
+        // Block if within threshold
         if (timeSincePress < threshold) {
             state.blockedCount++;
             return true;
