@@ -66,6 +66,19 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
         KBDLLHOOKSTRUCT* pKbdStruct = (KBDLLHOOKSTRUCT*)lParam;
         DWORD vkCode = pKbdStruct->vkCode;
 
+        // Check if this is an injected/synthetic key press (from macro software)
+        // LLKHF_INJECTED (0x10) flag indicates the key was injected by software
+        bool isInjected = (pKbdStruct->flags & LLKHF_INJECTED) != 0;
+        
+        // Check if dwExtraInfo was set by SendInput (common for macro tools)
+        // Most hardware keyboard events have dwExtraInfo = 0
+        bool hasMacroSignature = pKbdStruct->dwExtraInfo != 0;
+        
+        // If this looks like a macro/software input, allow it through
+        if (isInjected || hasMacroSignature) {
+            return CallNextHookEx(hHook, nCode, wParam, lParam);
+        }
+
         bool isKeyDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
         
         if (ShouldBlockKey(vkCode, isKeyDown)) {
