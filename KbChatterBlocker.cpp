@@ -3,10 +3,10 @@
 #include <chrono>
 
 // Configuration
-const int CHATTER_THRESHOLD_MS = 85;         // Block everything faster than this
+const int CHATTER_THRESHOLD_MS = 85;         // Block normal chatter
 const int REPEAT_CHATTER_THRESHOLD_MS = 30;  // Threshold when holding key
 const int REPEAT_TRANSITION_DELAY_MS = 150;  // Time to enter repeat mode
-const int FORCE_ALLOW_MS = 60;               // Always allow presses faster than this
+const int FORCE_ALLOW_MS = 60;               // Any press faster than this is always allowed
 
 struct KeyState {
     long long lastPressTime = 0;
@@ -36,13 +36,13 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
 
         long long timeSincePress = currentTime - state.lastPressTime;
 
-        // pokud je pod FORCE_ALLOW_MS, povolit vždy
+        // ▸ FORCE_ALLOW_MS: pokud je aktuální stisk kdykoliv rychlejší než 60ms, povolit úplně
         if (timeSincePress < FORCE_ALLOW_MS) {
             state.lastPressTime = currentTime;
             return false;
         }
 
-        // Check if we're in repeat/hold mode
+        // ▸ Normální chatter logika
         int threshold;
         if (state.inRepeatMode) {
             threshold = REPEAT_CHATTER_THRESHOLD_MS;
@@ -53,10 +53,9 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
             }
         }
 
-        // Block if within threshold
         if (timeSincePress < threshold) {
             state.blockedCount++;
-            return true;
+            return true; // blokuj chatter
         }
 
         state.lastPressTime = currentTime;
@@ -70,11 +69,11 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
 
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
-        KBDLLHOOKSTRUCT* pKbdStruct = (KBDLLHOOKSTRUCT*)lParam;
-        DWORD vkCode = pKbdStruct->vkCode;
+        KBDLLHOOKSTRUCT* kb = (KBDLLHOOKSTRUCT*)lParam;
+        DWORD vkCode = kb->vkCode;
 
-        // IGNORE INJECTED INPUT (makra, AHK, G Hub)
-        if (pKbdStruct->flags & LLKHF_INJECTED) {
+        // ▸ IGNORE INJECTED INPUT (makra, AHK, G Hub)
+        if (kb->flags & LLKHF_INJECTED) {
             return CallNextHookEx(hHook, nCode, wParam, lParam);
         }
 
@@ -88,34 +87,28 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     return CallNextHookEx(hHook, nCode, wParam, lParam);
 }
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-    // Create mutex to prevent multiple instances
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     HANDLE hMutex = CreateMutex(NULL, TRUE, L"KbChatterBlockerMutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         CloseHandle(hMutex);
         return 0;
     }
 
-    // Install keyboard hook
     hHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
-    
-    if (hHook == NULL) {
+    if (!hHook) {
         ReleaseMutex(hMutex);
         CloseHandle(hMutex);
         return 1;
     }
 
-    // Message loop
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
 
-    // Cleanup
     UnhookWindowsHookEx(hHook);
     ReleaseMutex(hMutex);
     CloseHandle(hMutex);
-
     return 0;
 }
