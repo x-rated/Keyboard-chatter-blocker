@@ -2,13 +2,12 @@
 #include <unordered_map>
 #include <chrono>
 #include <string>
-#include <psapi.h>  // for GetModuleBaseName
 
 // Configuration
-const int CHATTER_THRESHOLD_MS = 85;         // Block normal chatter
+const int CHATTER_THRESHOLD_MS = 85;         // Block presses in 60-85ms range
+const int MACRO_SPEED_THRESHOLD_MS = 60;     // Anything faster than this = macro, allow through
 const int REPEAT_CHATTER_THRESHOLD_MS = 30;  // Threshold when holding key
 const int REPEAT_TRANSITION_DELAY_MS = 150;  // Time to enter repeat mode
-const int FORCE_ALLOW_MS = 60;               // Any press faster than this is always allowed in system apps
 
 struct KeyState {
     long long lastPressTime = 0;
@@ -20,41 +19,68 @@ struct KeyState {
 std::unordered_map<DWORD, KeyState> keyStates;
 HHOOK hHook = NULL;
 
-// Returns current time in milliseconds
 long long GetCurrentTimeMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()
     ).count();
 }
 
-// Checks if the foreground window is a system app (not a game)
-bool IsSystemAppActive() {
-    HWND fg = GetForegroundWindow();
-    if (!fg) return true; // no window = system
+bool IsGameWindow() {
+    // Get the foreground window
+    HWND hwnd = GetForegroundWindow();
+    if (!hwnd) return false;
 
-    DWORD pid;
-    GetWindowThreadProcessId(fg, &pid);
-    HANDLE hProc = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
-    if (!hProc) return true;
-
-    char exeName[MAX_PATH] = {0};
-    if (GetModuleBaseNameA(hProc, NULL, exeName, MAX_PATH) == 0) {
-        CloseHandle(hProc);
+    // Get window class name
+    wchar_t className[256];
+    GetClassName(hwnd, className, 256);
+    
+    // Get window title
+    wchar_t windowTitle[256];
+    GetWindowText(hwnd, windowTitle, 256);
+    
+    std::wstring classStr(className);
+    std::wstring titleStr(windowTitle);
+    
+    // Check for common game engine window classes
+    if (classStr.find(L"UnrealWindow") != std::wstring::npos ||
+        classStr.find(L"SDL_app") != std::wstring::npos ||
+        classStr.find(L"GLFW") != std::wstring::npos ||
+        classStr.find(L"UnityWndClass") != std::wstring::npos) {
         return true;
     }
-    CloseHandle(hProc);
-
-    std::string nameStr = exeName;
-    // blacklist of games
-    const char* gameExes[] = { "csgo.exe", "valorant.exe", "fortnite.exe", "dota2.exe" };
-    for (auto g : gameExes) {
-        if (_stricmp(nameStr.c_str(), g) == 0) return false; // game detected, bypass filtering
+    
+    // Check if window is fullscreen (common for games)
+    RECT windowRect;
+    GetWindowRect(hwnd, &windowRect);
+    
+    int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+    
+    bool isFullscreen = (windowRect.left == 0 && 
+                        windowRect.top == 0 && 
+                        (windowRect.right - windowRect.left) == screenWidth && 
+                        (windowRect.bottom - windowRect.top) == screenHeight);
+    
+    // Check window style for borderless fullscreen
+    LONG style = GetWindowLong(hwnd, GWL_STYLE);
+    bool isBorderless = !(style & WS_CAPTION) && !(style & WS_THICKFRAME);
+    
+    // If window is fullscreen or borderless fullscreen, likely a game
+    if ((isFullscreen || isBorderless) && 
+        (windowRect.right - windowRect.left) >= 800 && 
+        (windowRect.bottom - windowRect.top) >= 600) {
+        return true;
     }
-    return true; // system application
+    
+    return false;
 }
 
-// Determines if the key should be blocked
 bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
+    // If we're in a game, disable all filtering
+    if (IsGameWindow()) {
+        return false;
+    }
+    
     KeyState& state = keyStates[vkCode];
     long long currentTime = GetCurrentTimeMs();
 
@@ -66,13 +92,13 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
 
         long long timeSincePress = currentTime - state.lastPressTime;
 
-        // In system apps, allow ultra-fast presses for macros
-        if (IsSystemAppActive() && timeSincePress < FORCE_ALLOW_MS) {
+        // MACRO DETECTION: If faster than 60ms, it's likely a macro - allow through
+        if (timeSincePress < MACRO_SPEED_THRESHOLD_MS) {
             state.lastPressTime = currentTime;
-            return false; // allow very fast presses
+            return false;
         }
 
-        // Normal chatter logic
+        // Check if we're in repeat/hold mode
         int threshold;
         if (state.inRepeatMode) {
             threshold = REPEAT_CHATTER_THRESHOLD_MS;
@@ -83,9 +109,10 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
             }
         }
 
+        // Block if within chatter range (60-85ms)
         if (timeSincePress < threshold) {
             state.blockedCount++;
-            return true; // block chatter
+            return true;
         }
 
         state.lastPressTime = currentTime;
@@ -97,24 +124,22 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
     }
 }
 
-// Low-level keyboard hook callback
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
-        KBDLLHOOKSTRUCT* kb = (KBDLLHOOKSTRUCT*)lParam;
-        DWORD vkCode = kb->vkCode;
+        KBDLLHOOKSTRUCT* pKbdStruct = (KBDLLHOOKSTRUCT*)lParam;
+        DWORD vkCode = pKbdStruct->vkCode;
 
         bool isKeyDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
-
+        
         if (ShouldBlockKey(vkCode, isKeyDown)) {
-            return 1; // block the key
+            return 1; // Block the key
         }
     }
 
     return CallNextHookEx(hHook, nCode, wParam, lParam);
 }
 
-// Main entry point
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     // Create mutex to prevent multiple instances
     HANDLE hMutex = CreateMutex(NULL, TRUE, L"KbChatterBlockerMutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -122,9 +147,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         return 0;
     }
 
-    // Install low-level keyboard hook
+    // Install keyboard hook
     hHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
-    if (!hHook) {
+    
+    if (hHook == NULL) {
         ReleaseMutex(hMutex);
         CloseHandle(hMutex);
         return 1;
@@ -141,5 +167,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     UnhookWindowsHookEx(hHook);
     ReleaseMutex(hMutex);
     CloseHandle(hMutex);
+
     return 0;
 }
