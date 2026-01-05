@@ -1,8 +1,13 @@
 # Keyboard Chatter Blocker
-Simple keyboard chatter blocker with 85 ms threshold.
-No tray icon and no settings. AMD64 binary.
 
-To run the app automatically at login, add it to Task Scheduler.
-You can terminate the process via Task Manager.
+Blocks accidental double key presses (chatter) in the **60–85 ms range** while leaving faster key presses (e.g., macros under 60 ms) unaffected. Filtering is **disabled automatically in games**.
 
-Created with Claude.ai.
+- No tray icon, no settings.  
+- AMD64 binary.
+
+## Usage
+
+- To run the app automatically at login, add it to Task Scheduler.  
+- Terminate the process via Task Manager.
+
+*Created with Claude.ai.*
