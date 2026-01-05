@@ -1,21 +1,21 @@
 #include <windows.h>
 #include <unordered_map>
 #include <chrono>
-#include <vector>
 
 // Configuration
 const int CHATTER_THRESHOLD_MS = 85;         // Block everything faster than this
 const int REPEAT_CHATTER_THRESHOLD_MS = 30;  // Threshold when holding key
 const int REPEAT_TRANSITION_DELAY_MS = 150;  // Time to enter repeat mode
-const int PATTERN_HISTORY_SIZE = 4;          // How many recent intervals to analyze
-const int PATTERN_CONSISTENCY_THRESHOLD = 15; // Max deviation (ms) for macro detection
+const int RAPID_SEQUENCE_THRESHOLD = 3;      // Number of fast presses to consider it a macro
+const int RAPID_SEQUENCE_WINDOW_MS = 500;    // Time window to detect rapid sequences
 
 struct KeyState {
     long long lastPressTime = 0;
     long long lastReleaseTime = 0;
     bool inRepeatMode = false;
     int blockedCount = 0;
-    std::vector<long long> recentIntervals; // Track recent press-to-press intervals
+    int rapidPressCount = 0;            // Count of rapid presses in current sequence
+    long long rapidSequenceStartTime = 0; // When rapid sequence started
 };
 
 std::unordered_map<DWORD, KeyState> keyStates;
@@ -27,31 +27,6 @@ long long GetCurrentTimeMs() {
     ).count();
 }
 
-bool IsMacroPattern(const std::vector<long long>& intervals) {
-    if (intervals.size() < 3) {
-        return false; // Not enough data
-    }
-    
-    // Calculate average interval
-    long long sum = 0;
-    for (long long interval : intervals) {
-        sum += interval;
-    }
-    long long avg = sum / intervals.size();
-    
-    // Check consistency - macros have very consistent timing
-    // Chatter is more erratic
-    for (long long interval : intervals) {
-        long long deviation = (interval > avg) ? (interval - avg) : (avg - interval);
-        if (deviation > PATTERN_CONSISTENCY_THRESHOLD) {
-            return false; // Too much variation, likely chatter
-        }
-    }
-    
-    // All intervals are very consistent - likely a macro
-    return true;
-}
-
 bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
     KeyState& state = keyStates[vkCode];
     long long currentTime = GetCurrentTimeMs();
@@ -59,30 +34,40 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
     if (isKeyDown) {
         if (state.lastPressTime == 0) {
             state.lastPressTime = currentTime;
+            state.rapidSequenceStartTime = currentTime;
+            state.rapidPressCount = 1;
             return false;
         }
 
         long long timeSincePress = currentTime - state.lastPressTime;
+        long long timeSinceSequenceStart = currentTime - state.rapidSequenceStartTime;
 
-        // Track this interval for pattern analysis
-        state.recentIntervals.push_back(timeSincePress);
-        if (state.recentIntervals.size() > PATTERN_HISTORY_SIZE) {
-            state.recentIntervals.erase(state.recentIntervals.begin());
+        // Reset rapid press counter if too much time has passed
+        if (timeSinceSequenceStart > RAPID_SEQUENCE_WINDOW_MS) {
+            state.rapidPressCount = 0;
+            state.rapidSequenceStartTime = currentTime;
         }
 
-        // Check if this is a fast press that might be chatter OR macro
+        // If this is a fast press, increment rapid press counter
         if (timeSincePress < CHATTER_THRESHOLD_MS) {
-            // Analyze pattern - if it's consistent, it's likely a macro
-            if (IsMacroPattern(state.recentIntervals)) {
-                // Consistent pattern detected - allow (macro)
+            state.rapidPressCount++;
+            
+            // If we've seen multiple rapid presses in sequence, it's likely a macro
+            // Chatter typically produces 1-2 bounces, macros produce longer sequences
+            if (state.rapidPressCount >= RAPID_SEQUENCE_THRESHOLD) {
+                // This is a rapid sequence (macro) - allow it
                 state.lastPressTime = currentTime;
                 return false;
             }
             
-            // Erratic pattern - block (chatter)
+            // Not enough rapid presses yet - block as potential chatter
             state.blockedCount++;
             return true;
         }
+
+        // Reset rapid press counter for slower presses
+        state.rapidPressCount = 0;
+        state.rapidSequenceStartTime = currentTime;
 
         // Check if we're in repeat/hold mode
         int threshold;
@@ -106,13 +91,6 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
     } else {
         state.lastReleaseTime = currentTime;
         state.inRepeatMode = false;
-        
-        // Clear interval history on key release
-        // This helps distinguish single chatters from macro sequences
-        if (currentTime - state.lastPressTime > 100) {
-            state.recentIntervals.clear();
-        }
-        
         return false;
     }
 }
