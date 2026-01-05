@@ -1,15 +1,11 @@
 #include <windows.h>
 #include <unordered_map>
 #include <chrono>
-#include <string>
-#include <fstream>
-#include <iomanip>
-#include <sstream>
 
 // Configuration
 const int CHATTER_THRESHOLD_MS = 85;         // Block everything faster than this
-const int REPEAT_CHATTER_THRESHOLD_MS = 30;
-const int REPEAT_TRANSITION_DELAY_MS = 150;
+const int REPEAT_CHATTER_THRESHOLD_MS = 30;  // Threshold when holding key
+const int REPEAT_TRANSITION_DELAY_MS = 150;  // Time to enter repeat mode
 
 struct KeyState {
     long long lastPressTime = 0;
@@ -20,43 +16,11 @@ struct KeyState {
 
 std::unordered_map<DWORD, KeyState> keyStates;
 HHOOK hHook = NULL;
-HWND hStatusWindow = NULL;
-HWND hStatusText = NULL;
-HWND hLogPathText = NULL;
-int totalBlocked = 0;
-std::ofstream logFile;
-std::wstring logFilePath;
-
-void LogToFile(const std::wstring& message) {
-    if (!logFile.is_open()) {
-        return;
-    }
-    
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    
-    char timeStr[64];
-    sprintf_s(timeStr, "[%02d:%02d:%02d.%03d] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-    
-    logFile << timeStr;
-    
-    // Convert wstring to string for logging
-    std::string str(message.begin(), message.end());
-    logFile << str << std::endl;
-    logFile.flush();
-}
 
 long long GetCurrentTimeMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()
     ).count();
-}
-
-void UpdateStatus(const std::wstring& message) {
-    if (hStatusText) {
-        SetWindowText(hStatusText, message.c_str());
-    }
-    LogToFile(message);
 }
 
 bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
@@ -66,13 +30,12 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
     if (isKeyDown) {
         if (state.lastPressTime == 0) {
             state.lastPressTime = currentTime;
-            UpdateStatus(L"First press of VK" + std::to_wstring(vkCode));
             return false;
         }
 
         long long timeSincePress = currentTime - state.lastPressTime;
 
-        // Check if we're in repeat/hold mode (holding a key down)
+        // Check if we're in repeat/hold mode
         int threshold;
         if (state.inRepeatMode) {
             threshold = REPEAT_CHATTER_THRESHOLD_MS;
@@ -86,19 +49,10 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
         // Block if within threshold
         if (timeSincePress < threshold) {
             state.blockedCount++;
-            totalBlocked++;
-            std::wstring status = L"✗ BLOCKED #" + std::to_wstring(totalBlocked) + 
-                                 L" VK" + std::to_wstring(vkCode) + 
-                                 L" | P→P:" + std::to_wstring(timeSincePress) + 
-                                 L"ms | Threshold:" + std::to_wstring(threshold) + L"ms";
-            UpdateStatus(status);
             return true;
         }
 
         state.lastPressTime = currentTime;
-        std::wstring status = L"✓ Allowed VK" + std::to_wstring(vkCode) + 
-                             L" | P→P:" + std::to_wstring(timeSincePress) + L"ms";
-        UpdateStatus(status);
         return false;
     } else {
         state.lastReleaseTime = currentTime;
@@ -114,162 +68,29 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 
         bool isKeyDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
         
-        // Check if Ctrl is held (for testing intentional double-taps)
-        bool ctrlHeld = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-        
-        if (ctrlHeld && isKeyDown && vkCode != VK_CONTROL) {
-            // Log this as an intentional test press
-            KeyState& state = keyStates[vkCode];
-            long long currentTime = GetCurrentTimeMs();
-            
-            if (state.lastPressTime > 0) {
-                long long timeSincePress = currentTime - state.lastPressTime;
-                long long timeSinceRelease = currentTime - state.lastReleaseTime;
-                long long keyHeldDuration = state.lastReleaseTime - state.lastPressTime;
-                
-                std::wstring testLog = L"[TEST-INTENTIONAL] VK" + std::to_wstring(vkCode) + 
-                                       L" | P→P:" + std::to_wstring(timeSincePress) + 
-                                       L"ms | Held:" + std::to_wstring(keyHeldDuration) + 
-                                       L"ms | Gap:" + std::to_wstring(timeSinceRelease) + L"ms";
-                LogToFile(testLog);
-            }
-            
-            state.lastPressTime = currentTime;
-        }
-        
         if (ShouldBlockKey(vkCode, isKeyDown)) {
-            return 1;
+            return 1; // Block the key
         }
     }
 
     return CallNextHookEx(hHook, nCode, wParam, lParam);
 }
 
-LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    switch (uMsg) {
-        case WM_DESTROY:
-            PostQuitMessage(0);
-            return 0;
-        
-        case WM_COMMAND:
-            if (LOWORD(wParam) == 1) { // Close button
-                DestroyWindow(hwnd);
-            }
-            return 0;
-    }
-    return DefWindowProc(hwnd, uMsg, wParam, lParam);
-}
-
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-    // Register window class
-    WNDCLASS wc = {};
-    wc.lpfnWndProc = WindowProc;
-    wc.hInstance = hInstance;
-    wc.lpszClassName = L"KbChatterBlockerClass";
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    
-    if (!RegisterClass(&wc)) {
-        MessageBox(NULL, L"Failed to register window class!", L"Error", MB_OK | MB_ICONERROR);
-        return 1;
-    }
-
-    // Create window
-    hStatusWindow = CreateWindowEx(
-        0,
-        L"KbChatterBlockerClass",
-        L"Keyboard Chatter Blocker - Diagnostic Mode",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 500, 280,
-        NULL, NULL, hInstance, NULL
-    );
-
-    if (!hStatusWindow) {
-        MessageBox(NULL, L"Failed to create window!", L"Error", MB_OK | MB_ICONERROR);
-        return 1;
-    }
-
-    // Create status text
-    CreateWindow(L"STATIC", L"Configuration:",
-        WS_VISIBLE | WS_CHILD | SS_LEFT,
-        10, 10, 470, 20,
-        hStatusWindow, NULL, hInstance, NULL);
-
-    std::wstring config = L"Chatter Threshold: " + std::to_wstring(CHATTER_THRESHOLD_MS) + 
-                         L"ms | Repeat: " + std::to_wstring(REPEAT_CHATTER_THRESHOLD_MS) + L"ms";
-    CreateWindow(L"STATIC", config.c_str(),
-        WS_VISIBLE | WS_CHILD | SS_LEFT,
-        10, 35, 470, 20,
-        hStatusWindow, NULL, hInstance, NULL);
-
-    CreateWindow(L"STATIC", L"_____________________________________________",
-        WS_VISIBLE | WS_CHILD | SS_LEFT,
-        10, 55, 470, 20,
-        hStatusWindow, NULL, hInstance, NULL);
-
-    hStatusText = CreateWindow(L"STATIC", L"Status: Starting...",
-        WS_VISIBLE | WS_CHILD | SS_LEFT,
-        10, 80, 470, 40,
-        hStatusWindow, NULL, hInstance, NULL);
-
-    CreateWindow(L"STATIC", L"Blocks all key presses faster than 90ms.\nAfter 150ms hold, switches to 30ms for repeats.",
-        WS_VISIBLE | WS_CHILD | SS_LEFT,
-        10, 130, 470, 40,
-        hStatusWindow, NULL, hInstance, NULL);
-
-    hLogPathText = CreateWindow(L"STATIC", L"Log file: ...",
-        WS_VISIBLE | WS_CHILD | SS_LEFT,
-        10, 175, 470, 20,
-        hStatusWindow, NULL, hInstance, NULL);
-
-    // Create close button
-    CreateWindow(L"BUTTON", L"Close && Exit",
-        WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-        200, 200, 100, 25,
-        hStatusWindow, (HMENU)1, hInstance, NULL);
-
-    ShowWindow(hStatusWindow, nCmdShow);
-    UpdateWindow(hStatusWindow);
-
-    // Get executable path and create log file in same directory
-    wchar_t exePath[MAX_PATH];
-    GetModuleFileName(NULL, exePath, MAX_PATH);
-    std::wstring exeDir(exePath);
-    size_t lastSlash = exeDir.find_last_of(L"\\/");
-    if (lastSlash != std::wstring::npos) {
-        exeDir = exeDir.substr(0, lastSlash);
-    }
-    logFilePath = exeDir + L"\\KbChatterBlocker_log.txt";
-    
-    // Convert to narrow string for ofstream
-    std::string logFilePathNarrow(logFilePath.begin(), logFilePath.end());
-    
-    // Initialize log file
-    logFile.open(logFilePathNarrow, std::ios::trunc);
-    if (logFile.is_open()) {
-        logFile << "=== Keyboard Chatter Blocker Log ===" << std::endl;
-        logFile << "Chatter Threshold: " << CHATTER_THRESHOLD_MS << "ms" << std::endl;
-        logFile << "Repeat Threshold: " << REPEAT_CHATTER_THRESHOLD_MS << "ms" << std::endl;
-        logFile << "Repeat Transition: " << REPEAT_TRANSITION_DELAY_MS << "ms" << std::endl;
-        logFile << "=====================================" << std::endl << std::endl;
-        logFile.flush();
-        
-        // Show log file path in window
-        std::wstring logPathDisplay = L"Log file: " + logFilePath;
-        SetWindowText(hLogPathText, logPathDisplay.c_str());
-    } else {
-        SetWindowText(hLogPathText, L"Log file: ERROR - Could not create log file!");
+    // Create mutex to prevent multiple instances
+    HANDLE hMutex = CreateMutex(NULL, TRUE, L"KbChatterBlockerMutex");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        CloseHandle(hMutex);
+        return 0;
     }
 
     // Install keyboard hook
     hHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
     
     if (hHook == NULL) {
-        DWORD error = GetLastError();
-        std::wstring errorMsg = L"Failed to install keyboard hook!\nError code: " + std::to_wstring(error);
-        MessageBox(hStatusWindow, errorMsg.c_str(), L"Error", MB_OK | MB_ICONERROR);
-        UpdateStatus(L"Status: FAILED - Hook not installed!");
-    } else {
-        UpdateStatus(L"Status: Running | Chatter threshold: 90ms");
+        ReleaseMutex(hMutex);
+        CloseHandle(hMutex);
+        return 1;
     }
 
     // Message loop
@@ -280,14 +101,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     // Cleanup
-    if (hHook) {
-        UnhookWindowsHookEx(hHook);
-    }
-    
-    if (logFile.is_open()) {
-        logFile << std::endl << "=== Session ended ===" << std::endl;
-        logFile.close();
-    }
+    UnhookWindowsHookEx(hHook);
+    ReleaseMutex(hMutex);
+    CloseHandle(hMutex);
 
     return 0;
 }
