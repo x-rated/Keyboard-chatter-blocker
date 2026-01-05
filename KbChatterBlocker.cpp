@@ -1,17 +1,21 @@
 #include <windows.h>
 #include <unordered_map>
 #include <chrono>
+#include <vector>
 
 // Configuration
 const int CHATTER_THRESHOLD_MS = 85;         // Block everything faster than this
 const int REPEAT_CHATTER_THRESHOLD_MS = 30;  // Threshold when holding key
 const int REPEAT_TRANSITION_DELAY_MS = 150;  // Time to enter repeat mode
+const int PATTERN_HISTORY_SIZE = 4;          // How many recent intervals to analyze
+const int PATTERN_CONSISTENCY_THRESHOLD = 15; // Max deviation (ms) for macro detection
 
 struct KeyState {
     long long lastPressTime = 0;
     long long lastReleaseTime = 0;
     bool inRepeatMode = false;
     int blockedCount = 0;
+    std::vector<long long> recentIntervals; // Track recent press-to-press intervals
 };
 
 std::unordered_map<DWORD, KeyState> keyStates;
@@ -21,6 +25,31 @@ long long GetCurrentTimeMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()
     ).count();
+}
+
+bool IsMacroPattern(const std::vector<long long>& intervals) {
+    if (intervals.size() < 3) {
+        return false; // Not enough data
+    }
+    
+    // Calculate average interval
+    long long sum = 0;
+    for (long long interval : intervals) {
+        sum += interval;
+    }
+    long long avg = sum / intervals.size();
+    
+    // Check consistency - macros have very consistent timing
+    // Chatter is more erratic
+    for (long long interval : intervals) {
+        long long deviation = (interval > avg) ? (interval - avg) : (avg - interval);
+        if (deviation > PATTERN_CONSISTENCY_THRESHOLD) {
+            return false; // Too much variation, likely chatter
+        }
+    }
+    
+    // All intervals are very consistent - likely a macro
+    return true;
 }
 
 bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
@@ -34,6 +63,26 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
         }
 
         long long timeSincePress = currentTime - state.lastPressTime;
+
+        // Track this interval for pattern analysis
+        state.recentIntervals.push_back(timeSincePress);
+        if (state.recentIntervals.size() > PATTERN_HISTORY_SIZE) {
+            state.recentIntervals.erase(state.recentIntervals.begin());
+        }
+
+        // Check if this is a fast press that might be chatter OR macro
+        if (timeSincePress < CHATTER_THRESHOLD_MS) {
+            // Analyze pattern - if it's consistent, it's likely a macro
+            if (IsMacroPattern(state.recentIntervals)) {
+                // Consistent pattern detected - allow (macro)
+                state.lastPressTime = currentTime;
+                return false;
+            }
+            
+            // Erratic pattern - block (chatter)
+            state.blockedCount++;
+            return true;
+        }
 
         // Check if we're in repeat/hold mode
         int threshold;
@@ -57,6 +106,13 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
     } else {
         state.lastReleaseTime = currentTime;
         state.inRepeatMode = false;
+        
+        // Clear interval history on key release
+        // This helps distinguish single chatters from macro sequences
+        if (currentTime - state.lastPressTime > 100) {
+            state.recentIntervals.clear();
+        }
+        
         return false;
     }
 }
@@ -65,19 +121,6 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         KBDLLHOOKSTRUCT* pKbdStruct = (KBDLLHOOKSTRUCT*)lParam;
         DWORD vkCode = pKbdStruct->vkCode;
-
-        // Check if this is an injected/synthetic key press (from macro software)
-        // LLKHF_INJECTED (0x10) flag indicates the key was injected by software
-        bool isInjected = (pKbdStruct->flags & LLKHF_INJECTED) != 0;
-        
-        // Check if dwExtraInfo was set by SendInput (common for macro tools)
-        // Most hardware keyboard events have dwExtraInfo = 0
-        bool hasMacroSignature = pKbdStruct->dwExtraInfo != 0;
-        
-        // If this looks like a macro/software input, allow it through
-        if (isInjected || hasMacroSignature) {
-            return CallNextHookEx(hHook, nCode, wParam, lParam);
-        }
 
         bool isKeyDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
         
