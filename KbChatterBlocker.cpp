@@ -6,7 +6,7 @@
 const int CHATTER_THRESHOLD_MS = 85;         // Block everything faster than this
 const int REPEAT_CHATTER_THRESHOLD_MS = 30;  // Threshold when holding key
 const int REPEAT_TRANSITION_DELAY_MS = 150;  // Time to enter repeat mode
-const int FORCE_ALLOW_MS = 50;               // Always allow presses faster than this
+const int FORCE_ALLOW_MS = 60;               // Always allow presses faster than this
 
 struct KeyState {
     long long lastPressTime = 0;
