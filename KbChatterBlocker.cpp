@@ -2,11 +2,10 @@
 #include <unordered_map>
 #include <chrono>
 
-// Configuration
-const int CHATTER_THRESHOLD_MS = 85;         // Fast press threshold
-const int REPEAT_CHATTER_THRESHOLD_MS = 30;  // Threshold when holding key
-const int REPEAT_TRANSITION_DELAY_MS = 150;  // Time to enter repeat mode
-const int MACRO_TIMING_TOLERANCE_MS = 15;    // If hold time ≈ gap time, it's a macro
+const int CHATTER_THRESHOLD_MS = 85;
+const int REPEAT_CHATTER_THRESHOLD_MS = 30;
+const int REPEAT_TRANSITION_DELAY_MS = 150;
+const int MACRO_TIMING_TOLERANCE_MS = 15;
 
 struct KeyState {
     long long lastPressTime = 0;
@@ -39,11 +38,8 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
         }
 
         long long timeSincePress = currentTime - state.lastPressTime;
-        long long timeSinceRelease = currentTime - state.lastReleaseTime;
 
-        // Check if we're in repeat/hold mode (holding key down)
         if (state.currentlyPressed) {
-            // Key is still held - this is auto-repeat
             if (timeSincePress > REPEAT_TRANSITION_DELAY_MS) {
                 state.inRepeatMode = true;
             }
@@ -52,37 +48,41 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
             
             if (timeSincePress >= threshold) {
                 state.lastPressTime = currentTime;
-                return false; // Allow repeat
+                return false;
             }
-            return true; // Too fast
+            return true;
         }
 
-        // This is a new press after release
         state.currentlyPressed = true;
-        state.currentPressStartTime = currentTime;
 
-        // MACRO DETECTION:
-        // If macro was detected in previous cycle, bypass filtering
-        if (state.macroDetected) {
-            state.lastPressTime = currentTime;
-            return false;
+        if (state.lastReleaseTime > 0) {
+            long long holdDuration = state.lastReleaseTime - state.lastPressTime;
+            long long gapDuration = currentTime - state.lastReleaseTime;
+            
+            long long difference = (holdDuration > gapDuration) ? 
+                                  (holdDuration - gapDuration) : 
+                                  (gapDuration - holdDuration);
+            
+            if (difference <= MACRO_TIMING_TOLERANCE_MS) {
+                state.lastPressTime = currentTime;
+                state.currentPressStartTime = currentTime;
+                return false;
+            }
         }
 
-        // Not a macro (yet) - apply chatter filtering
         if (timeSincePress < CHATTER_THRESHOLD_MS) {
-            // Fast press detected - likely chatter, block it
             state.blockedCount++;
             state.currentlyPressed = false;
             return true;
         }
 
         state.lastPressTime = currentTime;
+        state.currentPressStartTime = currentTime;
         return false;
         
     } else {
-        // Key release
         if (!state.currentlyPressed) {
-            return false; // Already released
+            return false;
         }
         
         state.currentlyPressed = false;
@@ -101,7 +101,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
         bool isKeyDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
         
         if (ShouldBlockKey(vkCode, isKeyDown)) {
-            return 1; // Block the key
+            return 1;
         }
     }
 
@@ -109,14 +109,12 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-    // Create mutex to prevent multiple instances
     HANDLE hMutex = CreateMutex(NULL, TRUE, L"KbChatterBlockerMutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         CloseHandle(hMutex);
         return 0;
     }
 
-    // Install keyboard hook
     hHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
     
     if (hHook == NULL) {
@@ -125,14 +123,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 1;
     }
 
-    // Message loop
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
 
-    // Cleanup
     UnhookWindowsHookEx(hHook);
     ReleaseMutex(hMutex);
     CloseHandle(hMutex);
