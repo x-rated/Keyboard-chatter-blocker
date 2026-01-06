@@ -27,7 +27,33 @@ long long GetCurrentTimeMs() {
     ).count();
 }
 
-bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
+bool IsSoftwareInput(KBDLLHOOKSTRUCT* pKbdStruct) {
+    // Check multiple indicators that this might be software-generated input
+    
+    // 1. LLKHF_INJECTED flag - set by SendInput and some injection methods
+    if (pKbdStruct->flags & LLKHF_INJECTED) {
+        return true;
+    }
+    
+    // 2. dwExtraInfo - many macro tools set this to non-zero
+    // Hardware keyboards typically leave it as 0
+    if (pKbdStruct->dwExtraInfo != 0) {
+        return true;
+    }
+    
+    // 3. LLKHF_LOWER_IL_INJECTED - injected from lower integrity level process
+    if (pKbdStruct->flags & LLKHF_LOWER_IL_INJECTED) {
+        return true;
+    }
+    
+    // 4. Check scanCode - some software sends 0 or unusual values
+    // Real keyboards have proper scancodes
+    if (pKbdStruct->scanCode == 0 && pKbdStruct->vkCode != VK_PAUSE) {
+        return true;
+    }
+    
+    return false;
+}
     KeyState& state = keyStates[vkCode];
     long long currentTime = GetCurrentTimeMs();
 
@@ -102,6 +128,12 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         KBDLLHOOKSTRUCT* pKbdStruct = (KBDLLHOOKSTRUCT*)lParam;
         DWORD vkCode = pKbdStruct->vkCode;
+
+        // Check if this is software-generated input (macro)
+        if (IsSoftwareInput(pKbdStruct)) {
+            // This is from macro software - allow it through without filtering
+            return CallNextHookEx(hHook, nCode, wParam, lParam);
+        }
 
         bool isKeyDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
         
