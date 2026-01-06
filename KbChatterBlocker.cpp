@@ -2,18 +2,11 @@
 #include <unordered_map>
 #include <chrono>
 
-const int CHATTER_THRESHOLD_MS = 85;
-const int REPEAT_CHATTER_THRESHOLD_MS = 30;
-const int REPEAT_TRANSITION_DELAY_MS = 150;
-const int MACRO_TIMING_TOLERANCE_MS = 15;
+// Configuration
+const int CHATTER_THRESHOLD_MS = 15;  // Block everything faster than this
 
 struct KeyState {
     long long lastPressTime = 0;
-    long long lastReleaseTime = 0;
-    long long currentPressStartTime = 0;
-    bool inRepeatMode = false;
-    bool currentlyPressed = false;
-    int blockedCount = 0;
 };
 
 std::unordered_map<DWORD, KeyState> keyStates;
@@ -25,72 +18,24 @@ long long GetCurrentTimeMs() {
     ).count();
 }
 
-bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
+bool ShouldBlockKey(DWORD vkCode) {
     KeyState& state = keyStates[vkCode];
     long long currentTime = GetCurrentTimeMs();
 
-    if (isKeyDown) {
-        if (state.lastPressTime == 0) {
-            state.lastPressTime = currentTime;
-            state.currentPressStartTime = currentTime;
-            state.currentlyPressed = true;
-            return false;
-        }
-
-        long long timeSincePress = currentTime - state.lastPressTime;
-
-        if (state.currentlyPressed) {
-            if (timeSincePress > REPEAT_TRANSITION_DELAY_MS) {
-                state.inRepeatMode = true;
-            }
-            
-            int threshold = state.inRepeatMode ? REPEAT_CHATTER_THRESHOLD_MS : CHATTER_THRESHOLD_MS;
-            
-            if (timeSincePress >= threshold) {
-                state.lastPressTime = currentTime;
-                return false;
-            }
-            return true;
-        }
-
-        state.currentlyPressed = true;
-
-        if (state.lastReleaseTime > 0) {
-            long long holdDuration = state.lastReleaseTime - state.lastPressTime;
-            long long gapDuration = currentTime - state.lastReleaseTime;
-            
-            long long difference = (holdDuration > gapDuration) ? 
-                                  (holdDuration - gapDuration) : 
-                                  (gapDuration - holdDuration);
-            
-            if (difference <= MACRO_TIMING_TOLERANCE_MS) {
-                state.lastPressTime = currentTime;
-                state.currentPressStartTime = currentTime;
-                return false;
-            }
-        }
-
-        if (timeSincePress < CHATTER_THRESHOLD_MS) {
-            state.blockedCount++;
-            state.currentlyPressed = false;
-            return true;
-        }
-
+    if (state.lastPressTime == 0) {
         state.lastPressTime = currentTime;
-        state.currentPressStartTime = currentTime;
-        return false;
-        
-    } else {
-        if (!state.currentlyPressed) {
-            return false;
-        }
-        
-        state.currentlyPressed = false;
-        state.lastReleaseTime = currentTime;
-        state.inRepeatMode = false;
-        
         return false;
     }
+
+    long long timeSincePress = currentTime - state.lastPressTime;
+
+    // Block if faster than threshold
+    if (timeSincePress < CHATTER_THRESHOLD_MS) {
+        return true;
+    }
+
+    state.lastPressTime = currentTime;
+    return false;
 }
 
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
@@ -100,8 +45,8 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 
         bool isKeyDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
         
-        if (ShouldBlockKey(vkCode, isKeyDown)) {
-            return 1;
+        if (isKeyDown && ShouldBlockKey(vkCode)) {
+            return 1; // Block the key
         }
     }
 
@@ -109,12 +54,14 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    // Create mutex to prevent multiple instances
     HANDLE hMutex = CreateMutex(NULL, TRUE, L"KbChatterBlockerMutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         CloseHandle(hMutex);
         return 0;
     }
 
+    // Install keyboard hook
     hHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
     
     if (hHook == NULL) {
@@ -123,12 +70,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 1;
     }
 
+    // Message loop
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
 
+    // Cleanup
     UnhookWindowsHookEx(hHook);
     ReleaseMutex(hMutex);
     CloseHandle(hMutex);
