@@ -54,6 +54,8 @@ bool IsSoftwareInput(KBDLLHOOKSTRUCT* pKbdStruct) {
     
     return false;
 }
+
+bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
     KeyState& state = keyStates[vkCode];
     long long currentTime = GetCurrentTimeMs();
 
