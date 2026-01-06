@@ -87,11 +87,36 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
     long long currentTime = GetCurrentTimeMs();
 
     if (isKeyDown) {
-        // Prevent double key-down events without release
+        // Check if this is a repeat event (holding key)
+        // Windows sends repeated keydown events when holding
         if (state.currentlyPressed) {
-            return true; // Block duplicate press
+            // This is a key repeat (holding), not a new press
+            long long timeSincePress = currentTime - state.lastPressTime;
+            
+            // Enter repeat mode after threshold
+            if (timeSincePress > REPEAT_TRANSITION_DELAY_MS) {
+                state.inRepeatMode = true;
+            }
+            
+            if (state.inRepeatMode) {
+                // In repeat mode, use lenient threshold
+                if (timeSincePress >= REPEAT_CHATTER_THRESHOLD_MS) {
+                    state.lastPressTime = currentTime;
+                    return false; // Allow repeat
+                } else {
+                    return true; // Too fast even for repeat
+                }
+            } else {
+                // Not in repeat mode yet, use normal threshold
+                if (timeSincePress >= CHATTER_THRESHOLD_MS) {
+                    state.lastPressTime = currentTime;
+                    return false;
+                }
+                return true;
+            }
         }
         
+        // This is a new press (key was not currently pressed)
         state.currentlyPressed = true;
         
         if (state.lastPressTime == 0) {
