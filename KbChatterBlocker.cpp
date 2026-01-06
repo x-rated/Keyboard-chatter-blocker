@@ -1,21 +1,29 @@
 #include <windows.h>
 #include <unordered_map>
 #include <chrono>
+#include <vector>
 
 // Configuration
-const int CHATTER_THRESHOLD_MS = 85;         // Threshold for suspected chatter
+const int CHATTER_THRESHOLD_MS = 85;         // Fast press threshold
 const int REPEAT_CHATTER_THRESHOLD_MS = 30;  // Threshold when holding key
 const int REPEAT_TRANSITION_DELAY_MS = 150;  // Time to enter repeat mode
-const int CHATTER_SUSPICION_COUNT = 2;       // How many fast presses before we start blocking
-const int CHATTER_HISTORY_WINDOW_MS = 2000;  // Time window to track chatter history (2 seconds)
+const int PATTERN_ANALYSIS_WINDOW = 5;       // Analyze last 5 events
+const int CLEAN_RELEASE_THRESHOLD_MS = 25;   // Minimum time key should be held for clean release
+
+struct PressReleaseEvent {
+    long long pressTime;
+    long long releaseTime;
+    long long pressToPressInterval;  // Time since last press
+    long long holdDuration;          // How long key was held
+};
 
 struct KeyState {
     long long lastPressTime = 0;
     long long lastReleaseTime = 0;
     bool inRepeatMode = false;
     int blockedCount = 0;
-    int suspectedChatterCount = 0;      // How many times we've seen fast presses in the window
-    long long chatterHistoryStartTime = 0; // When we started tracking this key's chatter
+    bool currentlyPressed = false;
+    std::vector<PressReleaseEvent> recentEvents;  // Track recent press/release patterns
 };
 
 std::unordered_map<DWORD, KeyState> keyStates;
@@ -27,57 +35,51 @@ long long GetCurrentTimeMs() {
     ).count();
 }
 
-bool IsSoftwareInput(KBDLLHOOKSTRUCT* pKbdStruct) {
-    // Check multiple indicators that this might be software-generated input
-    
-    // 1. LLKHF_INJECTED flag - set by SendInput and some injection methods
-    if (pKbdStruct->flags & LLKHF_INJECTED) {
-        return true;
+bool AnalyzePattern(const std::vector<PressReleaseEvent>& events) {
+    if (events.size() < 2) {
+        return true; // Not enough data, allow it
     }
     
-    // 2. dwExtraInfo - many macro tools set this to non-zero
-    // Hardware keyboards typically leave it as 0
-    if (pKbdStruct->dwExtraInfo != 0) {
-        return true;
-    }
+    // Analyze the pattern:
+    // CHATTER characteristics:
+    //   - Erratic press-to-press intervals
+    //   - Very short or inconsistent hold durations
+    //   - Often has quick press without proper release in between
+    //
+    // MACRO characteristics:
+    //   - Consistent press-to-press intervals
+    //   - Clean press-release pairs (proper hold duration)
+    //   - Predictable pattern
     
-    // 3. LLKHF_LOWER_IL_INJECTED - injected from lower integrity level process
-    if (pKbdStruct->flags & LLKHF_LOWER_IL_INJECTED) {
-        return true;
-    }
+    int cleanPressReleasePairs = 0;
+    int erraticEvents = 0;
     
-    // 4. Check scanCode - some software sends 0 or unusual values
-    // Real keyboards have proper scancodes
-    if (pKbdStruct->scanCode == 0 && pKbdStruct->vkCode != VK_PAUSE) {
-        return true;
-    }
-    
-    // 5. Check time - hardware has slight jitter, perfect timing is suspicious
-    // This helps detect G Hub and similar tools that simulate hardware perfectly
-    static long long lastEventTime = 0;
-    static int perfectTimingCount = 0;
-    
-    long long currentTime = pKbdStruct->time;
-    if (lastEventTime > 0) {
-        long long delta = currentTime - lastEventTime;
+    for (size_t i = 1; i < events.size(); i++) {
+        const auto& event = events[i];
         
-        // If we see multiple events with exactly the same interval (no jitter),
-        // it's likely software-generated
-        static long long lastDelta = 0;
-        if (delta == lastDelta && delta < 100) {
-            perfectTimingCount++;
-            if (perfectTimingCount >= 2) {
-                // Multiple perfectly-timed events = likely macro
-                return true;
-            }
-        } else {
-            perfectTimingCount = 0;
+        // Check if this was a clean press-release pair
+        if (event.holdDuration >= CLEAN_RELEASE_THRESHOLD_MS) {
+            cleanPressReleasePairs++;
         }
-        lastDelta = delta;
+        
+        // Check for erratic behavior (very short hold, indicating bounce)
+        if (event.holdDuration < 15 && event.pressToPressInterval < 100) {
+            erraticEvents++;
+        }
     }
-    lastEventTime = currentTime;
     
-    return false;
+    // If we see mostly clean press-release pairs, it's likely a macro
+    if (cleanPressReleasePairs >= (int)events.size() - 1) {
+        return true; // Allow - likely macro with clean patterns
+    }
+    
+    // If we see erratic events, likely chatter
+    if (erraticEvents >= 2) {
+        return false; // Block - likely chatter
+    }
+    
+    // Default: allow (benefit of the doubt)
+    return true;
 }
 
 bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
@@ -85,44 +87,31 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
     long long currentTime = GetCurrentTimeMs();
 
     if (isKeyDown) {
+        // Prevent double key-down events without release
+        if (state.currentlyPressed) {
+            return true; // Block duplicate press
+        }
+        
+        state.currentlyPressed = true;
+        
         if (state.lastPressTime == 0) {
             state.lastPressTime = currentTime;
-            state.chatterHistoryStartTime = currentTime;
             return false;
         }
 
         long long timeSincePress = currentTime - state.lastPressTime;
-        long long timeSinceHistoryStart = currentTime - state.chatterHistoryStartTime;
 
-        // Reset chatter history if enough time has passed
-        if (timeSinceHistoryStart > CHATTER_HISTORY_WINDOW_MS) {
-            state.suspectedChatterCount = 0;
-            state.chatterHistoryStartTime = currentTime;
-        }
-
-        // Check if this press is in the suspected chatter range (0-85ms)
+        // Check if this is a fast press that might be chatter
         if (timeSincePress < CHATTER_THRESHOLD_MS) {
-            // Increment suspected chatter count
-            state.suspectedChatterCount++;
+            // Analyze recent press/release patterns
+            bool shouldAllow = AnalyzePattern(state.recentEvents);
             
-            // SMART DETECTION:
-            // One-off fast press is fine (could be intentional double-tap or macro)
-            // But if we've seen this key repeatedly show fast presses, start blocking
-            if (state.suspectedChatterCount < CHATTER_SUSPICION_COUNT) {
-                // First fast press in the window - allow it (benefit of the doubt)
-                state.lastPressTime = currentTime;
-                return false;
+            if (!shouldAllow) {
+                // Pattern analysis suggests this is chatter
+                state.blockedCount++;
+                state.currentlyPressed = false; // Reset since we're blocking
+                return true;
             }
-            
-            // This key has repeatedly shown fast presses - likely chatter, block it
-            state.blockedCount++;
-            return true;
-        }
-
-        // Reset suspicion count for normal-speed presses
-        if (timeSincePress >= CHATTER_THRESHOLD_MS) {
-            state.suspectedChatterCount = 0;
-            state.chatterHistoryStartTime = currentTime;
         }
 
         // Check if we're in repeat/hold mode
@@ -136,17 +125,49 @@ bool ShouldBlockKey(DWORD vkCode, bool isKeyDown) {
             }
         }
 
-        // Block if within threshold
-        if (timeSincePress < threshold) {
-            state.blockedCount++;
-            return true;
+        // Block if within threshold and not in repeat mode
+        if (timeSincePress < threshold && !state.inRepeatMode) {
+            // Do another pattern check
+            bool shouldAllow = AnalyzePattern(state.recentEvents);
+            if (!shouldAllow) {
+                state.blockedCount++;
+                state.currentlyPressed = false;
+                return true;
+            }
         }
 
         state.lastPressTime = currentTime;
         return false;
+        
     } else {
+        // Key release
+        if (!state.currentlyPressed) {
+            return false; // Already released or was blocked
+        }
+        
+        state.currentlyPressed = false;
         state.lastReleaseTime = currentTime;
         state.inRepeatMode = false;
+        
+        // Record this press-release event
+        PressReleaseEvent event;
+        event.pressTime = state.lastPressTime;
+        event.releaseTime = currentTime;
+        event.holdDuration = currentTime - state.lastPressTime;
+        
+        if (!state.recentEvents.empty()) {
+            event.pressToPressInterval = state.lastPressTime - state.recentEvents.back().pressTime;
+        } else {
+            event.pressToPressInterval = 0;
+        }
+        
+        state.recentEvents.push_back(event);
+        
+        // Keep only recent events
+        if (state.recentEvents.size() > PATTERN_ANALYSIS_WINDOW) {
+            state.recentEvents.erase(state.recentEvents.begin());
+        }
+        
         return false;
     }
 }
@@ -155,12 +176,6 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         KBDLLHOOKSTRUCT* pKbdStruct = (KBDLLHOOKSTRUCT*)lParam;
         DWORD vkCode = pKbdStruct->vkCode;
-
-        // Check if this is software-generated input (macro)
-        if (IsSoftwareInput(pKbdStruct)) {
-            // This is from macro software - allow it through without filtering
-            return CallNextHookEx(hHook, nCode, wParam, lParam);
-        }
 
         bool isKeyDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
         
