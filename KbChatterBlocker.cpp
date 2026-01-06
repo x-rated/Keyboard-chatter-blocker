@@ -52,6 +52,31 @@ bool IsSoftwareInput(KBDLLHOOKSTRUCT* pKbdStruct) {
         return true;
     }
     
+    // 5. Check time - hardware has slight jitter, perfect timing is suspicious
+    // This helps detect G Hub and similar tools that simulate hardware perfectly
+    static long long lastEventTime = 0;
+    static int perfectTimingCount = 0;
+    
+    long long currentTime = pKbdStruct->time;
+    if (lastEventTime > 0) {
+        long long delta = currentTime - lastEventTime;
+        
+        // If we see multiple events with exactly the same interval (no jitter),
+        // it's likely software-generated
+        static long long lastDelta = 0;
+        if (delta == lastDelta && delta < 100) {
+            perfectTimingCount++;
+            if (perfectTimingCount >= 2) {
+                // Multiple perfectly-timed events = likely macro
+                return true;
+            }
+        } else {
+            perfectTimingCount = 0;
+        }
+        lastDelta = delta;
+    }
+    lastEventTime = currentTime;
+    
     return false;
 }
 
