@@ -1,0 +1,26 @@
+name: Build Chat-Blocker
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v1.1
+        with:
+          vs-version: latest
+
+      - name: Build EXE
+        run: msbuild KbChatterBlocker.sln /p:Configuration=Release /p:Platform=x64
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatter-blocker-exe
+          path: Release\x64\KbChatterBlocker.exe
